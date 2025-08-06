@@ -1,0 +1,408 @@
+#cloud-config
+# =============================================================================
+# CLOUD-INIT CONFIGURATION FOR NGINX STATIC WEBSITE
+# Enterprise-grade setup with SSL, monitoring, and security
+# =============================================================================
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - nginx
+  - curl
+  - wget
+  - unzip
+  - jq
+  - htop
+  - vim
+  - certbot
+  - python3-certbot-nginx
+  - rsyslog
+  - logrotate
+  - fail2ban
+  - ufw
+
+# Create necessary directories
+write_files:
+  - path: /etc/nginx/sites-available/default
+    content: |
+      server {
+          listen 80 default_server;
+          listen [::]:80 default_server;
+          server_name _;
+          root /var/www/html;
+          index index.html index.htm index.nginx-debian.html;
+          
+          # Health check endpoint for load balancer
+          location /health {
+              access_log off;
+              return 200 "healthy\n";
+              add_header Content-Type text/plain;
+          }
+          
+          # Main site location
+          location / {
+              try_files $uri $uri/ =404;
+          }
+          
+          # Security headers
+          add_header X-Frame-Options "SAMEORIGIN" always;
+          add_header X-XSS-Protection "1; mode=block" always;
+          add_header X-Content-Type-Options "nosniff" always;
+          add_header Referrer-Policy "no-referrer-when-downgrade" always;
+          add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline' https://*.applicationinsights.azure.com;" always;
+          
+      }
+    permissions: '0644'
+    owner: root:root
+
+  - path: /var/www/html/index.html
+    content: |
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Azure Static Website</title>
+          <script type="text/javascript">
+            // Application Insights placeholder
+            var appInsights=window.appInsights||function(a){
+                function b(a){c[a]=function(){var b=arguments;c.queue.push(function(){c[a].apply(c,b)})}}var c={config:a},d=document,e=window;setTimeout(function(){var b=d.createElement("script");b.src=a.src||"https://az416426.vo.msecnd.net/scripts/b/ai.2.min.js";d.getElementsByTagName("script")[0].parentNode.appendChild(b)});try{c.cookie=d.cookie}catch(a){}c.queue=[];for(var f=["Event","Exception","Metric","PageView","Trace","DependencyData","Flush","Track"," सेटCrossDomainTracking","clearAuthenticatedUserContext","getAuthenticatedUserContext"];f.length;)b("track"+f.pop());if(b("setAuthenticatedUserContext"),b("clearAuthenticatedUserContext"),b("startTrackEvent"),b("stopTrackEvent"),b("startTrackPage"),b("stopTrackPage"),b("flush"),!a.disableExceptionTracking){f="onerror",b("_"+f);var g=e[f];e[f]=function(a,b,d,e,h){var i=g&&g(a,b,d,e,h);return!0!==i&&c["_"+f]({message:a,url:b,lineNumber:d,columnNumber:e,error:h}),i}}return c
+            }({
+                connectionString: "__APPINSIGHTS_CONNECTION_STRING__"
+            });
+            window.appInsights=appInsights,appInsights.queue&&0===appInsights.queue.length&&appInsights.trackPageView({});
+          </script>
+          <style>
+              body { font-family: Arial, sans-serif; margin: 40px; background-color: #f5f5f5; }
+              .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+              h1 { color: #0078d4; }
+              .info { background: #e7f3ff; padding: 15px; border-radius: 4px; margin: 20px 0; }
+              .status { color: #107c10; font-weight: bold; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <h1>🚀 Azure Static Website</h1>
+              <div class="info">
+                  <p><strong>Status:</strong> <span class="status">✅ Online</span></p>
+                  <p><strong>Server:</strong> <span id="hostname">Loading...</span></p>
+                  <p><strong>Timestamp:</strong> <span id="timestamp">Loading...</span></p>
+              </div>
+              <h2>Features Enabled</h2>
+              <ul>
+                  <li>✅ High Availability with VM Scale Sets</li>
+                  <li>✅ Load Balancing across Availability Zones</li>
+                  <li>✅ Auto-scaling based on CPU utilization</li>
+                  <li>✅ Secure access via Azure Bastion</li>
+                  <li>✅ SSL/TLS encryption</li>
+                  <li>✅ Automated backup and disaster recovery</li>
+                  <li>✅ Comprehensive monitoring and logging</li>
+                  <li>✅ Automated patch management</li>
+              </ul>
+          </div>
+          <script>
+              document.getElementById('hostname').textContent = window.location.hostname;
+              document.getElementById('timestamp').textContent = new Date().toLocaleString();
+          </script>
+      </body>
+      </html>
+    permissions: '0644'
+    owner: www-data:www-data
+
+  - path: /opt/configure-appinsights.sh
+    content: |
+      #!/bin/bash
+      set -e
+      
+      KV_NAME="__KEY_VAULT_NAME__"
+      SECRET_NAME="__SECRET_NAME__"
+      
+      # Login to Azure with Managed Identity
+      az login --identity
+      
+      # Get the connection string from Key Vault
+      CONN_STRING=$(az keyvault secret show --vault-name "$KV_NAME" --name "$SECRET_NAME" --query value -o tsv)
+      
+      # Replace the placeholder in the HTML file
+      sed -i "s|__APPINSIGHTS_CONNECTION_STRING__|${CONN_STRING}|g" /var/www/html/index.html
+
+    permissions: '0755'
+    owner: root:root
+    
+  - path: /opt/setup-nginx.sh
+    content: |
+      #!/bin/bash
+      # =============================================================================
+      # NGINX SETUP SCRIPT FOR AZURE VM SCALE SET
+      # Configures nginx with SSL, monitoring, and security best practices
+      # =============================================================================
+      
+      set -euo pipefail
+      
+      # Variables
+      LOG_FILE="/var/log/nginx-setup.log"
+      DOMAIN_NAME="${DOMAIN_NAME:-example.com}"
+      EMAIL="${SSL_EMAIL:-admin@example.com}"
+      
+      # Logging function
+      log() {
+          echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+      }
+      
+      log "Starting nginx setup script"
+      
+      # Install Azure CLI if not present
+      if ! command -v az &> /dev/null; then
+          log "Installing Azure CLI"
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+      fi
+      
+      # Get instance metadata
+      INSTANCE_NAME=$(curl -s -H "Metadata: true" "http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01&format=text" || echo "unknown")
+      RESOURCE_GROUP=$(curl -s -H "Metadata: true" "http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text" || echo "unknown")
+      
+      log "Instance: $INSTANCE_NAME, Resource Group: $RESOURCE_GROUP"
+      
+      # Configure nginx
+      log "Configuring nginx"
+      sudo systemctl enable nginx
+      sudo systemctl start nginx
+      
+      # Configure log rotation
+      sudo tee /etc/logrotate.d/nginx-custom > /dev/null <<EOF
+      /var/log/nginx/*.log {
+          daily
+          missingok
+          rotate 52
+          compress
+          delaycompress
+          notifempty
+          create 644 nginx adm
+          sharedscripts
+          prerotate
+              if [ -d /etc/logrotate.d/httpd-prerotate ]; then \
+                  run-parts /etc/logrotate.d/httpd-prerotate; \
+              fi \
+          endscript
+          postrotate
+              invoke-rc.d nginx rotate >/dev/null 2>&1
+          endscript
+      }
+      EOF
+      
+      # Configure fail2ban for nginx
+      sudo tee /etc/fail2ban/jail.d/nginx.conf > /dev/null <<EOF
+      [nginx-http-auth]
+      enabled = true
+      port = http,https
+      logpath = /var/log/nginx/error.log
+      
+      [nginx-limit-req]
+      enabled = true
+      port = http,https
+      logpath = /var/log/nginx/error.log
+      maxretry = 10
+      
+      [nginx-botsearch]
+      enabled = true
+      port = http,https
+      logpath = /var/log/nginx/access.log
+      maxretry = 2
+      EOF
+      
+      # Configure UFW firewall
+      log "Configuring firewall"
+      sudo ufw --force enable
+      sudo ufw default deny incoming
+      sudo ufw default allow outgoing
+      sudo ufw allow ssh
+      sudo ufw allow 'Nginx Full'
+      
+      # Setup SSL with Let's Encrypt (if domain is configured)
+      if [ "$DOMAIN_NAME" != "example.com" ]; then
+          log "Setting up SSL certificate for $DOMAIN_NAME"
+          sudo certbot --nginx -d "$DOMAIN_NAME" --non-interactive --agree-tos --email "$EMAIL" --redirect
+          
+          # Setup auto-renewal
+          (crontab -l 2>/dev/null; echo "0 12 * * * /usr/bin/certbot renew --quiet") | crontab -
+      else
+          log "Skipping SSL setup - no valid domain configured"
+      fi
+      
+      # Test nginx configuration
+      sudo nginx -t
+      sudo systemctl reload nginx
+      
+      # Start services
+      sudo systemctl enable fail2ban
+      sudo systemctl start fail2ban
+      
+      log "Nginx setup completed successfully"
+      
+      # Send success signal (if running in Azure)
+      if command -v az &> /dev/null; then
+          # This would typically signal back to Azure that setup is complete
+          log "Signaling setup completion to Azure"
+      fi
+    permissions: '0755'
+    owner: root:root
+
+  - path: /opt/get-ssl-certs.sh
+    content: |
+      #!/bin/bash
+      # =============================================================================
+      # SSL CERTIFICATE RETRIEVAL FROM AZURE KEY VAULT
+      # Downloads SSL certificates from Key Vault and configures nginx
+      # =============================================================================
+      
+      set -euo pipefail
+      
+      # Variables
+      KEY_VAULT_NAME="${KEY_VAULT_NAME:-}"
+      CERT_NAME="${CERT_NAME:-ssl-certificate}"
+      LOG_FILE="/var/log/ssl-setup.log"
+      
+      # Logging function
+      log() {
+          echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+      }
+      
+      if [ -z "$KEY_VAULT_NAME" ]; then
+          log "KEY_VAULT_NAME not set, skipping SSL certificate retrieval"
+          exit 0
+      fi
+      
+      log "Retrieving SSL certificate from Key Vault: $KEY_VAULT_NAME"
+      
+      # Login using managed identity
+      az login --identity
+      
+      # Create SSL directory
+      sudo mkdir -p /etc/ssl/nginx
+      sudo chmod 750 /etc/ssl/nginx
+      
+      # Download certificate and key
+      az keyvault secret download \
+          --vault-name "$KEY_VAULT_NAME" \
+          --name "${CERT_NAME}-cert" \
+          --file /tmp/server.crt
+      
+      az keyvault secret download \
+          --vault-name "$KEY_VAULT_NAME" \
+          --name "${CERT_NAME}-key" \
+          --file /tmp/server.key
+      
+      # Move certificates to proper location
+      sudo mv /tmp/server.crt /etc/ssl/nginx/
+      sudo mv /tmp/server.key /etc/ssl/nginx/
+      sudo chmod 644 /etc/ssl/nginx/server.crt
+      sudo chmod 600 /etc/ssl/nginx/server.key
+      sudo chown root:root /etc/ssl/nginx/server.*
+      
+      # Update nginx configuration for SSL
+      sudo tee /etc/nginx/sites-available/default > /dev/null <<'EOF'
+      server {
+          listen 80 default_server;
+          listen [::]:80 default_server;
+          server_name _;
+          return 301 https://$server_name$request_uri;
+      }
+      
+      server {
+          listen 443 ssl default_server;
+          listen [::]:443 ssl default_server;
+          server_name _;
+          
+          ssl_certificate /etc/ssl/nginx/server.crt;
+          ssl_certificate_key /etc/ssl/nginx/server.key;
+          ssl_protocols TLSv1.2 TLSv1.3;
+          ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+          ssl_prefer_server_ciphers off;
+          ssl_session_cache shared:SSL:10m;
+          ssl_session_timeout 10m;
+          
+          root /var/www/html;
+          index index.html index.htm index.nginx-debian.html;
+          
+          location /health {
+              access_log off;
+              return 200 "healthy\n";
+              add_header Content-Type text/plain;
+          }
+          
+          location / {
+              try_files $uri $uri/ =404;
+          }
+          
+          # Security headers
+          add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload";
+          add_header X-Frame-Options "SAMEORIGIN" always;
+          add_header X-XSS-Protection "1; mode=block" always;
+          add_header X-Content-Type-Options "nosniff" always;
+          add_header Referrer-Policy "no-referrer-when-downgrade" always;
+          add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+      }
+      EOF
+      
+      # Test and reload nginx
+      sudo nginx -t && sudo systemctl reload nginx
+      
+      log "SSL certificate configuration completed"
+    permissions: '0755'
+    owner: root:root
+
+runcmd:
+  # Update system and install packages
+  - apt-get update && apt-get upgrade -y
+  
+  # Run nginx setup script
+  - /opt/setup-nginx.sh
+
+  # Configure Application Insights
+  - /opt/configure-appinsights.sh
+  
+  # Configure rsyslog to forward logs to Azure Monitor
+  - |
+    cat >> /etc/rsyslog.conf <<EOF
+    # Forward nginx logs to local syslog
+    $ModLoad imfile
+    $InputFileName /var/log/nginx/access.log
+    $InputFileTag nginx-access:
+    $InputFileStateFile state-nginx-access
+    $InputFileSeverity info
+    $InputRunFileMonitor
+    
+    $InputFileName /var/log/nginx/error.log
+    $InputFileTag nginx-error:
+    $InputFileStateFile state-nginx-error
+    $InputFileSeverity error
+    $InputRunFileMonitor
+    EOF
+    systemctl restart rsyslog
+  
+  # Start and enable services
+  - systemctl enable nginx
+  - systemctl start nginx
+  - systemctl enable fail2ban
+  - systemctl start fail2ban
+  
+  # Final health check
+  - curl -f http://localhost/health || exit 1
+
+# Set timezone
+timezone: UTC
+
+# Configure locale
+locale: en_US.UTF-8
+
+# Resize root filesystem
+resize_rootfs: true
+
+# Power state
+power_state:
+  delay: "+1"
+  mode: reboot
+  message: "Rebooting after initial setup"
+  timeout: 30
+  condition: True

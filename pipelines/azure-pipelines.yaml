@@ -1,0 +1,126 @@
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  - name: subscription
+    value: $(portfolio-sub-id)
+  - name: azureServiceConnection
+    value: 'az-sp-ado-crc'
+  - name: region
+    value: 'eastasia'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  - stage: Validate
+    displayName: 'Validate Infra'
+    jobs:
+      - job: ValidateBicep
+        displayName: 'Validate Bicep Templates'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Install Bicep CLI'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az bicep install --version $(bicepVersion)
+                az bicep version
+
+          - task: AzureCLI@2
+            displayName: 'Lint Bicep Templates'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Linting Bicep templates..."
+                bicep_files=$(find infrastructure -name "*.bicep" -type f)
+                for file in $bicep_files; do
+                  echo "Linting $file"
+                  az bicep build --file "$file" --stdout > /dev/null
+                  if [ $? -eq 0 ]; then
+                    echo "$file is valid"
+                  else
+                    echo "$file has errors"
+                    exit 1
+                  fi
+                done
+                
+  - stage: Build
+    displayName: Bicep Artifact
+    jobs:
+    - job: ArtifactDrop
+      displayName: 'Build Bicep artifact'
+      steps:
+        - task: CopyFiles@2
+          displayName: Copy files
+          inputs:
+            contents: '**'
+            targetFolder: '$(Build.ArtifactStagingDirectory)'
+        - publish: '$(Build.ArtifactStagingDirectory)'
+          displayName: 'Publish files'
+          artifact: drop
+
+  - stage: whatIf
+    dependsOn: Build
+    displayName: What if
+    jobs:
+      - job: whatIfBicep
+        displayName: 'What if'
+        steps:
+          - download: current
+            artifact: drop
+          - task: AzureCLI@2
+            displayName: Bicep what if
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              workingDirectory: $(Pipeline.Workspace)/drop/infra
+              inlineScript: |
+                name=bicepDeploy$(date +%F_%H-%M-%S)
+                az deployment sub what-if -l $(region) -n $name -f main.bicep -p main.prod.bicepparam
+
+      - job: waitForValidation
+        dependsOn: whatIfBicep
+        displayName: Wait for approval
+        pool: server  
+        timeoutInMinutes: 60
+        steps:   
+        - task: ManualValidation@0
+          timeoutInMinutes: 60
+          inputs:
+            notifyUsers: |
+              prabakaranpradeep@outlook.com
+            instructions: 'Please validate the what-if output and resume'
+            onTimeout: 'resume'
+
+  - stage: Deploy
+    dependsOn: whatIf
+    displayName: Bicep Deploy
+    jobs: 
+    - deployment: deploy
+      environment: 'production'
+      displayName: Deploy Prod
+      strategy:
+        runOnce:
+         deploy:
+           steps:
+             - download: current
+               artifact: drop
+             - task: AzureCLI@2
+               displayName: Deploy Bicep
+               inputs:
+                  azureSubscription: $(azureServiceConnection)
+                  scriptType: 'bash'
+                  scriptLocation: 'inlineScript'
+                  workingDirectory: $(Pipeline.Workspace)/drop/infra
+                  inlineScript: |
+                    name=bicepDeploy$(date +%F_%H-%M-%S)
+                    az account set -subscription $(subscription)
+                    az deployment sub create -l $(region) -n $name -f main.bicep -p main.prod.bicepparam
