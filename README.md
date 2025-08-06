@@ -8,8 +8,6 @@ The project is to create a highly available, secure and scalable solution for ho
 3.	Integration for Operational Excellence
 4.	Deploying the solution using Azure DevOps
 
-# High Level Steps
-
 # Architecture:
 
 ![alt text](image.png)
